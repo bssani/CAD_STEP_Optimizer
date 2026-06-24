@@ -1,0 +1,11 @@
+# Python deps for the CAD STEP -> GLB quality pipeline (pinned for reproducibility / .exe packaging)
+# Verified working on Windows 11 + Python 3.13.1.
+cadquery-ocp==7.9.3.1.1   # OCCT 7.9 Python binding (module: OCP) — STEP read, BRepMesh, glTF write
+pymeshlab==2025.7.post1   # Hausdorff distance + topology measures
+trimesh==4.12.2           # GLB -> world-space mesh baking (geometry extraction)
+pygltflib==1.16.5         # read-only GLB structure inspection (nodes, draw calls)
+numpy==2.4.1
+
+# Node deps (NOT pip): install separately
+#   npm i -g @gltf-transform/cli          # provides the `gltf-transform` CLI (dedup/weld/instance/simplify/meshopt)
+#   (local) npm install                   # installs @gltf-transform/core + functions for cadpipe/merge_faces.mjs
