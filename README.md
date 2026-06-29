@@ -56,11 +56,24 @@ python -m cadpipe.optimize out.glb model.step --simplify --simplify-error 0.005
 
 ## Run as a standalone .exe (no Python install needed)
 
-For sharing with the team, build a self-contained Windows bundle:
+### Build it (from a git clone)
 
 ```bat
+git clone https://github.com/bssani/CAD_STEP_Optimizer.git
+cd CAD_STEP_Optimizer
 build_exe.bat
 ```
+
+**The BUILD machine needs** (the *target* machine that runs the exe needs nothing):
+- **Python 3.13** (with pip) on PATH
+- **Node.js + npm** on PATH
+- **Internet** — the build downloads ~700 MB (cadquery-ocp, pymeshlab, vtk, pyinstaller,
+  gltf-transform). Takes ~10–15 min.
+
+`build_exe.bat` installs the Python deps, the gltf-transform CLI (global) + merge_faces
+deps (local), then runs PyInstaller and copies the helper files. If the build PC is
+locked down (no Python/Node/internet/admin), build on a machine that has them and copy
+the `dist\cadpipe-run\` folder over instead.
 
 This produces `dist\cadpipe-run\` — copy the **whole folder** and run:
 

@@ -7,13 +7,16 @@ echo [1/4] Python deps...
 python -m pip install -r requirements.txt pyinstaller
 if errorlevel 1 goto :err
 
-echo [2/4] Node deps (for the optimize phase's in-part face merge)...
+echo [2/4] Node deps (bundled into the exe so the target PC needs no Node)...
 where npm >nul 2>nul
 if errorlevel 1 (
-  echo   ^(npm not found - optimize phase will be skipped at runtime^)
+  echo   ^(npm/Node not found - install Node.js first, or the optimize phase will be skipped^)
 ) else (
-  REM 'call' is REQUIRED: npm is npm.cmd, and without 'call' the parent batch
+  REM 'call' is REQUIRED: npm is npm.cmd; without 'call' the parent batch
   REM terminates when npm finishes (window just closes mid-build).
+  echo   - gltf-transform CLI ^(global; the spec bundles it into the exe^)...
+  call npm install -g @gltf-transform/cli --no-fund --no-audit
+  echo   - merge_faces deps ^(local core+functions^)...
   call npm install --no-fund --no-audit
 )
 
