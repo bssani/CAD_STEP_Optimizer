@@ -15,9 +15,11 @@ python -m PyInstaller cadpipe-run.spec --noconfirm || goto :err
 
 echo [4/4] Copying convenience files next to the exe...
 copy /Y "테스트하기.bat" "dist\cadpipe-run\" >nul
+copy /Y "뷰어열기.bat" "dist\cadpipe-run\" >nul
 copy /Y "사용법.md" "dist\cadpipe-run\" >nul
 copy /Y "README.md" "dist\cadpipe-run\" >nul
 copy /Y "samples\DemoBracket.step" "dist\cadpipe-run\sample_DemoBracket.step" >nul
+if exist "viewer" ( mkdir "dist\cadpipe-run\viewer" 2>nul & copy /Y "viewer\*" "dist\cadpipe-run\viewer\" >nul )
 
 echo Done.
 echo   Test on this/any PC:  double-click dist\cadpipe-run\테스트하기.bat

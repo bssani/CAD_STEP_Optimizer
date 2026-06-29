@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>CAD GLB 오프라인 뷰어 (데이터 업로드 없음)</title>
+<!-- Babylon engine + glTF loader are LOCAL files -> works fully offline, nothing
+     ever leaves this PC. Load the *production.glb* (uncompressed) for QA; final.glb
+     is meshopt-compressed and its decoder may need internet. -->
+<script src="babylon.js"></script>
+<script src="babylonjs.loaders.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;background:#1b1d23;color:#dfe3ea;font:13px/1.5 system-ui,'Malgun Gothic',sans-serif;overflow:hidden}
+  #bar{position:fixed;top:0;left:0;right:0;height:44px;display:flex;align-items:center;gap:10px;
+       padding:0 12px;background:#23262e;border-bottom:1px solid #333;z-index:10}
+  #bar b{color:#7fd1ff}
+  button,label.btn{background:#2f80ed;color:#fff;border:0;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:13px}
+  label.tog{display:inline-flex;align-items:center;gap:5px;cursor:pointer;color:#cdd3dd}
+  #wrap{position:absolute;top:44px;left:0;right:320px;bottom:0}
+  #c{width:100%;height:100%;display:block;touch-action:none}
+  #side{position:fixed;top:44px;right:0;bottom:0;width:320px;background:#202329;border-left:1px solid #333;
+        overflow:auto;padding:12px}
+  #side h3{margin:14px 0 6px;color:#7fd1ff;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+  #stats div{margin:2px 0}
+  #tree{font-family:Consolas,monospace;font-size:12px;white-space:pre;line-height:1.45}
+  .mesh{color:#9be29b}.asm{color:#dfe3ea}
+  #drop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#7c828d;font-size:16px;pointer-events:none}
+  .k{color:#8b93a1}
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>CAD GLB 오프라인 뷰어</b>
+  <label class="btn">📂 GLB 열기<input id="file" type="file" accept=".glb,.gltf" style="display:none"></label>
+  <label class="tog"><input type="checkbox" id="cull" checked> 후면 컬링(끄면 뒤집힌 면 보임)</label>
+  <label class="tog"><input type="checkbox" id="wire"> 와이어프레임</label>
+  <label class="tog"><input type="checkbox" id="axes" checked> 축(X빨강 Y초록 Z파랑)</label>
+  <span class="k">· 데이터는 업로드되지 않습니다(로컬 전용)</span>
+</div>
+<div id="wrap"><canvas id="c"></canvas><div id="drop">여기에 .glb 파일을 끌어다 놓거나 ‘GLB 열기’</div></div>
+<div id="side">
+  <h3>정보</h3><div id="stats"><div class="k">파일을 여세요.</div></div>
+  <h3>구조 / 이름 (tree)</h3><div id="tree" class="k">—</div>
+</div>
+<script>
+const canvas = document.getElementById('c');
+const engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer:true, stencil:true});
+let scene, camera, axesViewer;
+
+function fresh(){
+  if(scene) scene.dispose();
+  scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0.106,0.114,0.137,1);
+  camera = new BABYLON.ArcRotateCamera('cam', Math.PI/4, Math.PI/3, 10, BABYLON.Vector3.Zero(), scene);
+  camera.attachControl(canvas, true);
+  camera.wheelDeltaPercentage = 0.01;
+  new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0,1,0), scene).intensity = 0.85;
+  const d = new BABYLON.DirectionalLight('d', new BABYLON.Vector3(-0.5,-1,-0.5), scene); d.intensity = 0.8;
+  return scene;
+}
+fresh();
+engine.runRenderLoop(()=>scene&&scene.render());
+addEventListener('resize',()=>engine.resize());
+
+async function loadFile(file){
+  document.getElementById('drop').style.display='none';
+  fresh();
+  const url = URL.createObjectURL(file);
+  try{
+    await BABYLON.SceneLoader.ImportMeshAsync('', '', url, scene, null, '.glb');
+  }catch(e){
+    document.getElementById('stats').innerHTML =
+      '<div style="color:#ff8a8a">불러오기 실패: '+e.message+
+      '<br>(final.glb는 압축본이라 오프라인에서 안 열릴 수 있어요. <b>production.glb</b>로 열어보세요.)</div>';
+    return;
+  }finally{ URL.revokeObjectURL(url); }
+
+  // frame camera on the model
+  const ext = scene.getWorldExtends(m=>m.getTotalVertices()>0);
+  const c = ext.min.add(ext.max).scale(0.5);
+  const size = ext.max.subtract(ext.min);
+  const r = Math.max(size.x,size.y,size.z)||1;
+  camera.setTarget(c); camera.radius = r*2.2; camera.lowerRadiusLimit = r*0.05;
+  if(axesViewer) axesViewer.dispose();
+  axesViewer = new BABYLON.AxesViewer(scene, r*0.6);
+
+  applyToggles();
+  showStats(size);
+  buildTree();
+}
+
+function showStats(size){
+  const meshes = scene.meshes.filter(m=>m.getTotalVertices()>0);
+  let tris=0, verts=0; meshes.forEach(m=>{tris+=m.getTotalIndices()/3; verts+=m.getTotalVertices();});
+  const up = size.y>=size.x && size.y>=size.z ? 'Y (정상)' : (size.z>size.y?'Z':'X')+' (Y-up 아님?)';
+  document.getElementById('stats').innerHTML =
+    `<div>메시(부품) 수: <b>${meshes.length}</b></div>`+
+    `<div>삼각형: <b>${tris.toLocaleString()}</b></div>`+
+    `<div>크기 X/Y/Z (m): ${size.x.toFixed(3)} / ${size.y.toFixed(3)} / ${size.z.toFixed(3)}</div>`+
+    `<div>가장 높은 축: <b>${up}</b></div>`+
+    `<div class="k">초록=Y(위)면 똑바로 선 것. 면이 어둡거나 비어보이면 ‘후면 컬링’ 꺼서 확인.</div>`;
+}
+
+function buildTree(){
+  const out=[];
+  const skip = n => ['Camera','HemisphericLight','DirectionalLight','FreeCamera','ArcRotateCamera'].includes(n.getClassName());
+  function walk(node, depth){
+    if(node.name==='__root__'){ node.getChildren().forEach(c=>walk(c,depth)); return; }
+    if(skip(node)) return;
+    const isMesh = node.getClassName().includes('Mesh') && node.getTotalVertices && node.getTotalVertices()>0;
+    out.push(`<span class="${isMesh?'mesh':'asm'}">`+'  '.repeat(depth)+(isMesh?'▸ ':'▾ ')+(node.name||'<무명>')+'</span>');
+    (node.getChildren?node.getChildren():[]).forEach(c=>walk(c,depth+1));
+  }
+  scene.rootNodes.forEach(n=>walk(n,0));
+  document.getElementById('tree').innerHTML = out.join('\n') || '(노드 없음)';
+}
+
+function applyToggles(){
+  const cull=document.getElementById('cull').checked, wire=document.getElementById('wire').checked;
+  scene.meshes.forEach(m=>{ if(m.material){ m.material.backFaceCulling=cull; m.material.wireframe=wire; }});
+}
+['cull','wire'].forEach(id=>document.getElementById(id).addEventListener('change',applyToggles));
+document.getElementById('axes').addEventListener('change',e=>{ if(axesViewer) axesViewer.xAxis.setEnabled(e.target.checked),axesViewer.yAxis.setEnabled(e.target.checked),axesViewer.zAxis.setEnabled(e.target.checked); });
+
+document.getElementById('file').addEventListener('change',e=>{ if(e.target.files[0]) loadFile(e.target.files[0]); });
+const wrap=document.getElementById('wrap');
+wrap.addEventListener('dragover',e=>e.preventDefault());
+wrap.addEventListener('drop',e=>{ e.preventDefault(); if(e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>
