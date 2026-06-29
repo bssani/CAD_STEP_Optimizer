@@ -65,17 +65,21 @@ class HausdorffStats:
 
 @dataclass
 class TopologyQA:
+    """Topology QA aggregated PER PART (per GLB mesh), not on the whole welded
+    assembly. Welding the entire assembly together would flag every place two
+    parts merely TOUCH as non-manifold — a false alarm on real assemblies. Each
+    part is welded and measured in isolation, so only genuine per-part defects
+    are counted."""
     weld_threshold_pct: float
-    connected_components: int
-    boundary_edges: int            # >0 after welding => suspected missing faces / cracks
-    suspected_missing_faces: int   # number_holes after welding
-    non_manifold_edges: int
-    non_manifold_vertices: int
-    genus: int
-    is_two_manifold: bool
-    is_closed: bool                # no open boundary / non-manifold edges after welding
-    winding_consistent: bool       # trimesh
-    flipped_normal_suspects: int   # vs trimesh coherent reorientation
+    parts_checked: int
+    parts_non_manifold: int        # parts that have non-manifold edges
+    parts_open: int                # manifold parts with open boundary (suspected missing faces)
+    parts_flipped: int             # parts with flipped-normal suspects
+    non_manifold_edges: int        # total across parts
+    boundary_edges: int            # total across manifold parts (open edges)
+    suspected_missing_faces: int   # total holes across manifold parts
+    flipped_normal_suspects: int   # total across parts
+    all_clean: bool
 
 
 @dataclass
@@ -83,7 +87,8 @@ class MeasureResult:
     glb: str
     source_step: str
     reference_glb: str
-    reference_chord_mm: float
+    reference_chord: float
+    reference_relative: bool
     reference_angular_deg: float
     # geometry / web-cost metrics (measured off the production GLB)
     draw_call_estimate: int
@@ -111,8 +116,15 @@ class MeasureResult:
 # reference mesh (ultra-dense, generated once)
 # ==========================================================================
 def generate_reference_glb(step: Path, out: Path,
-                           chord_mm: float = 0.01, angular_deg: float = 5.0) -> None:
+                           chord: float = 0.0001, angular_deg: float = 2.0,
+                           relative: bool = True) -> None:
     """Ultra-dense tessellation of the STEP -> GLB, the ground-truth stand-in.
+
+    The reference MUST be finer than production *everywhere*, or deviation reads
+    ~0. A fixed absolute chord (e.g. 0.01 mm) fails this on large models: it is
+    coarser than a RELATIVE production mesh on small faces. So the reference
+    defaults to RELATIVE with a ratio ~10x finer than the default relative
+    production (0.001) -> 0.0001, guaranteeing it is finer per-face.
 
     Goes through the SAME glTF writer as production so both meshes share the
     metres/Y-up convention and align without any extra transform.
@@ -121,8 +133,8 @@ def generate_reference_glb(step: Path, out: Path,
     doc = occ.read_step(step)
     st = occ.shape_tool(doc)
     comp = occ.free_compound(st)
-    params = occ.make_mesh_params(chord_mm, np.radians(angular_deg),
-                                  relative=False, in_parallel=True)
+    params = occ.make_mesh_params(chord, np.radians(angular_deg),
+                                  relative=relative, in_parallel=True)
     occ.mesh_shape(comp, params)
     occ.write_glb(doc, out)
 
@@ -167,42 +179,61 @@ def _hausdorff(ms: pymeshlab.MeshSet, sampled_id: int, target_id: int,
     )
 
 
-def _topology_qa(prod_ply: Path, weld_pct: float) -> TopologyQA:
-    # --- PyMeshLab: weld coincident verts, THEN measure (raw GLB is unwelded) ---
-    ms = pymeshlab.MeshSet()
-    ms.load_new_mesh(str(prod_ply))
-    ms.meshing_merge_close_vertices(threshold=pymeshlab.PercentageValue(weld_pct))
-    t = ms.get_topological_measures()
+def _topology_qa(prod_glb: Path, work_dir: Path, weld_pct: float) -> TopologyQA:
+    """Per-part topology QA. Each part (glTF MESH = all its primitives) is welded
+    + measured alone, so parts merely touching in the assembly are NOT flagged as
+    non-manifold."""
+    g = glb.load(prod_glb)
 
-    # "closed" is judged from the PyMeshLab POSITION-weld (authoritative): a solid
-    # with no open boundary and no non-manifold edges is closed. (trimesh's
-    # watertight check is tolerance-sensitive at metre scale and gives false
-    # negatives on OCCT's per-face output, so we don't use it for closedness.)
-    is_closed = (int(t["boundary_edges"]) == 0 and int(t["non_two_manifold_edges"]) == 0)
+    parts_checked = parts_nm = parts_open = parts_flipped = 0
+    tot_nm_edges = tot_boundary = tot_holes = tot_flips = 0
 
-    # --- trimesh: winding consistency + flipped-normal suspects only ---
-    m = trimesh.load(str(prod_ply), force="mesh")
-    m.merge_vertices(merge_norm=True, merge_tex=True)
-    winding_ok = bool(m.is_winding_consistent)
-    orig_n = m.face_normals.copy()
-    try:
-        trimesh.repair.fix_normals(m)
-        flips = int(np.sum(np.einsum("ij,ij->i", orig_n, m.face_normals) < 0))
-    except Exception:
-        flips = -1  # could not evaluate
+    for _name, V, F in glb.iter_part_meshes(g):
+        if len(F) == 0:
+            continue
+        parts_checked += 1
+
+        ms = pymeshlab.MeshSet()
+        ms.add_mesh(pymeshlab.Mesh(vertex_matrix=V, face_matrix=F))
+        ms.meshing_merge_close_vertices(threshold=pymeshlab.PercentageValue(weld_pct))
+        t = ms.get_topological_measures()
+        nm = int(t["non_two_manifold_edges"])
+        if nm > 0:
+            parts_nm += 1
+            tot_nm_edges += nm
+        else:
+            # holes/boundary are only meaningful on a manifold part
+            be = int(t["boundary_edges"])
+            holes = int(t["number_holes"])
+            if be > 0:
+                parts_open += 1
+                tot_boundary += be
+                tot_holes += max(holes, 0)
+
+        # flipped-normal suspects (trimesh coherent reorientation), per part
+        try:
+            mm = trimesh.Trimesh(vertices=V, faces=F, process=False)
+            mm.merge_vertices(merge_norm=True, merge_tex=True)
+            orig_n = mm.face_normals.copy()
+            trimesh.repair.fix_normals(mm)
+            f = int(np.sum(np.einsum("ij,ij->i", orig_n, mm.face_normals) < 0))
+        except Exception:
+            f = 0
+        if f > 0:
+            parts_flipped += 1
+            tot_flips += f
 
     return TopologyQA(
         weld_threshold_pct=weld_pct,
-        connected_components=int(t["connected_components_number"]),
-        boundary_edges=int(t["boundary_edges"]),
-        suspected_missing_faces=int(t["number_holes"]),
-        non_manifold_edges=int(t["non_two_manifold_edges"]),
-        non_manifold_vertices=int(t["non_two_manifold_vertices"]),
-        genus=int(t["genus"]),
-        is_two_manifold=bool(t["is_mesh_two_manifold"]),
-        is_closed=is_closed,
-        winding_consistent=winding_ok,
-        flipped_normal_suspects=flips,
+        parts_checked=parts_checked,
+        parts_non_manifold=parts_nm,
+        parts_open=parts_open,
+        parts_flipped=parts_flipped,
+        non_manifold_edges=tot_nm_edges,
+        boundary_edges=tot_boundary,
+        suspected_missing_faces=tot_holes,
+        flipped_normal_suspects=tot_flips,
+        all_clean=(parts_nm == 0 and parts_open == 0 and parts_flipped == 0),
     )
 
 
@@ -223,7 +254,8 @@ def _export_colormap(ms: pymeshlab.MeshSet, prod_id: int, out_ply: Path,
 def measure(prod_glb: Path, source_step: Path, out_dir: Path, *,
             target_mm: float = 0.1,
             reference_glb: Optional[Path] = None,
-            ref_chord_mm: float = 0.01, ref_angular_deg: float = 5.0,
+            ref_chord: float = 0.0001, ref_relative: bool = True,
+            ref_angular_deg: float = 2.0,
             samplenum: int = 100000, weld_pct: float = 0.001,
             verbose: bool = True) -> MeasureResult:
     t0 = time.perf_counter()
@@ -232,7 +264,7 @@ def measure(prod_glb: Path, source_step: Path, out_dir: Path, *,
     # 1) reference mesh (generate once, or reuse a provided one for re-measures)
     ref_glb = reference_glb or (out_dir / "_reference_dense.glb")
     if not ref_glb.exists():
-        generate_reference_glb(source_step, ref_glb, ref_chord_mm, ref_angular_deg)
+        generate_reference_glb(source_step, ref_glb, ref_chord, ref_angular_deg, ref_relative)
 
     # 2) web-cost metrics from the production GLB
     g = glb.load(prod_glb)
@@ -260,12 +292,13 @@ def measure(prod_glb: Path, source_step: Path, out_dir: Path, *,
     colormap_ply = out_dir / "deviation_colormap.ply"
     _export_colormap(ms, 0, colormap_ply, max_mm=max(sym_p95, 1e-6))
 
-    # 6) topology QA (separate, welded)
-    topo = _topology_qa(prod_ply, weld_pct)
+    # 6) topology QA (per-part, from the production GLB)
+    topo = _topology_qa(prod_glb, out_dir, weld_pct)
 
     result = MeasureResult(
         glb=str(prod_glb), source_step=str(source_step), reference_glb=str(ref_glb),
-        reference_chord_mm=ref_chord_mm, reference_angular_deg=ref_angular_deg,
+        reference_chord=ref_chord, reference_relative=ref_relative,
+        reference_angular_deg=ref_angular_deg,
         draw_call_estimate=draw_calls, rendered_triangles=rtris,
         unique_mesh_primitives=uprims, file_kb=file_kb,
         forward=forward, backward=backward,
@@ -298,7 +331,8 @@ def write_report(r: MeasureResult, path: Path) -> None:
         "",
         f"- source STEP: `{r.source_step}`",
         f"- reference (ground-truth approx): `{Path(r.reference_glb).name}` "
-        f"(chord {r.reference_chord_mm} mm, angular {r.reference_angular_deg} deg)",
+        f"(chord {r.reference_chord}{'(rel)' if r.reference_relative else 'mm'}, "
+        f"angular {r.reference_angular_deg} deg)",
         f"- measured in: {r.seconds:.2f} s",
         "",
         "## Deviation (bidirectional Hausdorff, mm)",
@@ -321,19 +355,17 @@ def write_report(r: MeasureResult, path: Path) -> None:
         f"- rendered triangles: {r.rendered_triangles}  (unique primitives: {r.unique_mesh_primitives})",
         f"- file size: {r.file_kb:.1f} KB",
         "",
-        "## Topology QA (welded; flags only, no auto-repair)",
+        "## Topology QA (PER PART; flags only, no auto-repair)",
         "",
-        f"- connected components: {t.connected_components}",
-        f"- non-manifold edges: {t.non_manifold_edges}, non-manifold vertices: {t.non_manifold_vertices}",
-        f"- boundary edges (after weld): {t.boundary_edges}  "
-        f"(>0 => suspected missing faces / cracks)",
-        f"- suspected missing faces (holes): {t.suspected_missing_faces}",
-        f"- flipped-normal suspects: {t.flipped_normal_suspects}",
-        f"- closed (no open edges): {t.is_closed}, winding consistent: {t.winding_consistent}, "
-        f"two-manifold: {t.is_two_manifold}, genus: {t.genus}",
+        f"- parts checked: {t.parts_checked}  ->  **{'all clean' if t.all_clean else 'issues found'}**",
+        f"- parts with non-manifold edges: {t.parts_non_manifold}  (total edges: {t.non_manifold_edges})",
+        f"- parts with open boundary (suspected missing faces): {t.parts_open}  "
+        f"(total open edges: {t.boundary_edges}, holes: {t.suspected_missing_faces})",
+        f"- parts with flipped-normal suspects: {t.parts_flipped}  (total faces: {t.flipped_normal_suspects})",
         "",
         f"- deviation colormap: `{Path(r.colormap_ply).name}`",
         "",
+        "_Each part is welded + measured ALONE, so parts merely touching are not flagged._",
         "_Reference is OCCT ultra-dense tessellation — an approximation of the BREP",
         "surface, not exact. Topology flags are heuristics to inspect, not proofs._",
     ]
@@ -343,7 +375,7 @@ def write_report(r: MeasureResult, path: Path) -> None:
 def _print_report(r: MeasureResult) -> None:
     print(f"[measure] {r.glb}")
     print(f"  reference: {Path(r.reference_glb).name} "
-          f"(chord {r.reference_chord_mm}mm / {r.reference_angular_deg}deg)")
+          f"(chord {r.reference_chord}{'rel' if r.reference_relative else 'mm'} / {r.reference_angular_deg}deg)")
     print(f"  deviation (mm):")
     for h in (r.forward, r.backward):
         print(f"    {h.direction:10}  P50={h.p50_mm:.4f}  P95={h.p95_mm:.4f}  "
@@ -354,10 +386,9 @@ def _print_report(r: MeasureResult) -> None:
     print(f"  web cost: draw_calls={r.draw_call_estimate}  "
           f"rendered_tris={r.rendered_triangles}  file={r.file_kb:.1f}KB")
     t = r.topology
-    print(f"  topology(welded): components={t.connected_components} "
-          f"nonmanifold_edges={t.non_manifold_edges} boundary_edges={t.boundary_edges} "
-          f"missing_face_suspect={t.suspected_missing_faces} flipped_normals={t.flipped_normal_suspects}")
-    print(f"    closed={t.is_closed} winding_ok={t.winding_consistent}")
+    print(f"  topology(per-part): {t.parts_checked} parts -> "
+          f"{'ALL CLEAN' if t.all_clean else 'ISSUES'}  "
+          f"non_manifold={t.parts_non_manifold} open={t.parts_open} flipped={t.parts_flipped}")
     print(f"  colormap: {r.colormap_ply}")
     print(f"  time: {r.seconds:.2f}s")
 
@@ -368,13 +399,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("step", type=Path, help="source STEP (for the reference mesh)")
     ap.add_argument("--out", type=Path, default=Path("reports/_measure"), help="output dir")
     ap.add_argument("--target", type=float, default=0.1, help="P95 target in mm (def 0.1)")
-    ap.add_argument("--ref-chord", type=float, default=0.01, help="reference chord mm (def 0.01)")
-    ap.add_argument("--ref-angular", type=float, default=5.0, help="reference angular deg (def 5)")
+    ap.add_argument("--ref-chord", type=float, default=0.0001,
+                    help="reference chord; relative ratio (def 0.0001) or mm if --ref-absolute")
+    ap.add_argument("--ref-absolute", action="store_true", help="treat --ref-chord as absolute mm")
+    ap.add_argument("--ref-angular", type=float, default=2.0, help="reference angular deg (def 2)")
     ap.add_argument("--reference", type=Path, default=None, help="reuse an existing reference GLB")
     ap.add_argument("--samples", type=int, default=100000, help="Hausdorff sample count (def 100000)")
     args = ap.parse_args(argv)
     measure(args.glb, args.step, args.out, target_mm=args.target,
-            reference_glb=args.reference, ref_chord_mm=args.ref_chord,
+            reference_glb=args.reference, ref_chord=args.ref_chord,
+            ref_relative=not args.ref_absolute,
             ref_angular_deg=args.ref_angular, samplenum=args.samples)
     return 0
 

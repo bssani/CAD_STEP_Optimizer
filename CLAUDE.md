@@ -47,10 +47,16 @@ cadpipe-run.spec  PyInstaller onedir spec ; build_exe.bat one-shot build
   team's real exterior/class-A naming/layer rule there; routing is already live.
 - **GLB is in METRES** (OCCT scales mm->m on glTF export). Multiply by 1000 for mm
   (`measure.GLB_UNIT_TO_MM`). If a future exporter changes this, fix that constant.
-- **Topology QA must WELD first.** OCCT writes one unwelded primitive per BREP face,
-  so raw GLB looks full of "holes". `measure._topology_qa` runs
-  `meshing_merge_close_vertices` before measuring; "closed" = PyMeshLab
-  `boundary_edges==0` (trimesh watertight is unreliable at metre scale).
+- **Topology QA is PER-PART, not per-assembly.** Welding the whole assembled mesh
+  flags every place two parts merely TOUCH as non-manifold (false alarm — seen on the
+  real GM_Samples seat: 307k bogus non-manifold edges). `measure._topology_qa` now
+  iterates each glTF MESH via `glb.iter_part_meshes` (concatenates that mesh's BREP-face
+  primitives), welds + measures each part ALONE. Reports `parts_non_manifold/open/flipped`.
+- **Reference mesh must be FINER than production everywhere**, or deviation reads ~0.
+  A fixed absolute chord (old default 0.01mm) is COARSER than a relative production mesh
+  on small faces of a large model (caused P95=0.0000 on the real seat). Reference is now
+  RELATIVE, 10x finer than production (`run --ref-factor`, default 10). It can be heavy
+  on huge models — lower the factor if slow.
 - **CLI `join` is BANNED** — its implicit `flatten` destroys the hierarchy even with
   `--keepNamed` (verified). In-part face merge is done by `merge_faces.mjs`
   (joinPrimitives per mesh, no flatten): 22->7 draw calls, structure 100% intact.
@@ -77,7 +83,11 @@ and shipped duplicate DLLs that segfaulted OCP's native import).
 
 ## Status
 All phases (0-4) done and `.exe` verified on the **synthetic** sample (`DemoBracket.step`):
-P95 0.006mm, draw calls 22->7, names 4/4, topology clean, archive reproducible.
+P95 0.008mm, draw calls 22->7, names 7/7, topology clean, archive reproducible.
+**First REAL CATIA test** (GM_Samples/CXX12000_Seats.stp, 114MB): structure preserved
+(names 41/41, hierarchy OK), draw calls 22434->32, 23MB->3.4MB. It surfaced two
+measurement bugs (P95=0 from coarse reference; 307k false non-manifold from whole-assembly
+weld) — BOTH FIXED (relative reference + per-part topology). Needs a re-test on real CAD.
 
 ## Remaining before production (mostly needs human input)
 - Test on a **real CATIA STEP** (everything so far is synthetic). Real CAD may have

@@ -13,7 +13,55 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 from pygltflib import GLTF2
+
+# glTF componentType -> numpy dtype, and accessor type -> component count
+_COMP = {5120: np.int8, 5121: np.uint8, 5122: np.int16,
+         5123: np.uint16, 5125: np.uint32, 5126: np.float32}
+_NUM = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16}
+
+
+def _accessor_array(g: GLTF2, blob: bytes, idx: int) -> np.ndarray:
+    """Decode a glTF accessor into an (count, ncomp) numpy array. Handles
+    interleaved buffers via byteStride. (Uncompressed GLB only — meshopt files
+    must be decoded first.)"""
+    acc = g.accessors[idx]
+    bv = g.bufferViews[acc.bufferView]
+    dt = np.dtype(_COMP[acc.componentType]).newbyteorder("<")
+    ncomp = _NUM[acc.type]
+    itemsize = dt.itemsize * ncomp
+    stride = bv.byteStride or itemsize
+    base = (bv.byteOffset or 0) + (acc.byteOffset or 0)
+    raw = np.frombuffer(blob, dtype=np.uint8, count=stride * acc.count, offset=base)
+    cols = np.ascontiguousarray(raw.reshape(acc.count, stride)[:, :itemsize])
+    return cols.view(dt).reshape(acc.count, ncomp)
+
+
+def iter_part_meshes(g: GLTF2):
+    """Yield (mesh_name, vertices(N,3) float64, faces(M,3) int64) per glTF MESH.
+
+    One glTF mesh == one part. Primitives of a mesh are concatenated so that a
+    part split into many BREP-face primitives is measured as a single solid.
+    Geometry is in LOCAL mesh coords (topology is transform-invariant)."""
+    blob = g.binary_blob()
+    for m in (g.meshes or []):
+        verts, faces, voff = [], [], 0
+        for p in m.primitives:
+            if p.mode not in (None, 4):       # TRIANGLES only
+                continue
+            if p.attributes.POSITION is None:
+                continue
+            pos = _accessor_array(g, blob, p.attributes.POSITION).astype(np.float64)
+            if p.indices is not None:
+                idx = _accessor_array(g, blob, p.indices).reshape(-1).astype(np.int64)
+            else:
+                idx = np.arange(len(pos), dtype=np.int64)
+            verts.append(pos)
+            faces.append(idx.reshape(-1, 3) + voff)
+            voff += len(pos)
+        if verts:
+            yield (m.name or "<unnamed>", np.vstack(verts), np.vstack(faces))
 
 
 def load(path: Path | str) -> GLTF2:

@@ -94,7 +94,7 @@ def _tool_versions(production_glb: Optional[Path]) -> dict:
 def run(step: Path, out_root: Path, *,
         mode: str = "relative", chord: Optional[float] = None, angular: float = 20.0,
         classa_factor: float = 0.5, classa_angular: float = 12.0,
-        target_mm: float = 0.1, samples: int = 100000,
+        target_mm: float = 0.1, samples: int = 100000, ref_factor: float = 10.0,
         opt_options: Optional[optimize_mod.OptimizeOptions] = None,
         draw_call_budget: Optional[int] = None,
         argv: Optional[list[str]] = None) -> Path:
@@ -118,8 +118,13 @@ def run(step: Path, out_root: Path, *,
     conv = convert_mod.convert_with_ocp(step, production, profiles, verbose=False)
 
     # ---- Phase 2: measure production ----
+    # Reference must be FINER than production everywhere, so derive it from the
+    # production tessellation (10x finer, same mode) instead of a fixed absolute
+    # value (which reads ~0 deviation on large models).
     meas_dir = archive / "measure"
     meas = measure_mod.measure(production, step, meas_dir, target_mm=target_mm,
+                               ref_chord=base.chord / max(ref_factor, 1.0),
+                               ref_relative=base.relative,
                                samplenum=samples, verbose=False)
     reference = Path(meas.reference_glb)  # reuse the SAME reference downstream
 
@@ -150,9 +155,7 @@ def run(step: Path, out_root: Path, *,
         "p95_within_target": bool(final_p95_ok),
         "structure_preserved": bool(structure_preserved),
         "names_preserved_in_production": bool(conv.names_ok),
-        "topology_clean": bool(meas.topology.non_manifold_edges == 0
-                               and meas.topology.boundary_edges == 0
-                               and meas.topology.flipped_normal_suspects == 0),
+        "topology_clean": bool(meas.topology.all_clean),
         "draw_call_within_budget": (None if (draw_call_budget is None or opt is None)
                                     else not opt.draw_call_over_budget),
     }
@@ -237,8 +240,9 @@ def _write_summary(path: Path, man: dict, conv, meas) -> None:
         f"{conv.part_names_preserved}/{conv.part_names_total}",
         f"- {mark(a['structure_preserved'])} hierarchy preserved"
         + (f" (LOST: {', '.join(r['lost_names'])})" if r["lost_names"] else ""),
-        f"- {mark(a['topology_clean'])} topology clean (non-manifold={meas.topology.non_manifold_edges}, "
-        f"missing-face={meas.topology.suspected_missing_faces}, flipped={meas.topology.flipped_normal_suspects})",
+        f"- {mark(a['topology_clean'])} topology clean (per-part: {meas.topology.parts_checked} parts, "
+        f"non-manifold={meas.topology.parts_non_manifold}, open={meas.topology.parts_open}, "
+        f"flipped={meas.topology.parts_flipped})",
         f"- {mark(a['draw_call_within_budget'])} draw-call budget"
         + ("" if a['draw_call_within_budget'] is not None else " (no budget set / optimize skipped)"),
         "",
@@ -299,6 +303,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--angular", type=float, default=20.0)
     ap.add_argument("--target", type=float, default=0.1, help="P95 deviation target mm")
     ap.add_argument("--samples", type=int, default=100000)
+    ap.add_argument("--ref-factor", type=float, default=10.0,
+                    help="reference mesh fineness vs production (def 10x finer; lower if too slow on huge models)")
     ap.add_argument("--draw-call-budget", type=int, default=None)
     # optimize toggles
     ap.add_argument("--no-merge-faces", action="store_true")
@@ -324,7 +330,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"Output: {out_root}\n")
     try:
         run(args.step, out_root, mode=args.mode, chord=args.chord, angular=args.angular,
-            target_mm=args.target, samples=args.samples, opt_options=opt_options,
+            target_mm=args.target, samples=args.samples, ref_factor=args.ref_factor,
+            opt_options=opt_options,
             draw_call_budget=args.draw_call_budget, argv=argv)
         rc = 0
     except Exception as exc:  # keep the window open on error when double-clicked
