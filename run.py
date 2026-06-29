@@ -164,7 +164,10 @@ def run(step: Path, out_root: Path, *,
         "p95_within_target": bool(final_p95_ok),
         "structure_preserved": bool(structure_preserved),
         "names_preserved_in_production": bool(conv.names_ok),
-        "topology_clean": bool(meas.topology.all_clean),
+        # only render-breaking defects fail acceptance; open boundaries are often
+        # legitimate sheet/surface bodies (common in real CAD) and render fine.
+        "topology_clean": bool(meas.topology.parts_non_manifold == 0
+                               and meas.topology.parts_flipped == 0),
         "draw_call_within_budget": (None if (draw_call_budget is None or opt is None)
                                     else not opt.draw_call_over_budget),
     }
@@ -295,9 +298,10 @@ def _write_summary(path: Path, man: dict, conv, meas) -> None:
         f"{conv.part_names_preserved}/{conv.part_names_total}",
         f"- {mark(a['structure_preserved'])} hierarchy preserved"
         + (f" (LOST: {', '.join(r['lost_names'])})" if r["lost_names"] else ""),
-        f"- {mark(a['topology_clean'])} topology clean (per-part: {meas.topology.parts_checked} parts, "
-        f"non-manifold={meas.topology.parts_non_manifold}, open={meas.topology.parts_open}, "
-        f"flipped={meas.topology.parts_flipped})",
+        f"- {mark(a['topology_clean'])} topology (render-affecting) — {meas.topology.parts_checked} parts: "
+        f"non-manifold={meas.topology.parts_non_manifold}, flipped={meas.topology.parts_flipped}",
+        f"- ℹ️ open-surface parts: {meas.topology.parts_open} "
+        f"(보통 시트/트림 같은 정상 sheet body — 웹 표시엔 문제 없음, 참고용)",
         f"- {mark(a['draw_call_within_budget'])} draw-call budget"
         + ("" if a['draw_call_within_budget'] is not None else " (no budget set / optimize skipped)"),
         "",

@@ -90,6 +90,8 @@ class OptimizeOptions:
     simplify: bool = False
     simplify_error: float = 0.001     # fraction of mesh radius (gltf-transform)
     simplify_ratio: float = 0.0       # target vertex-keep ratio (0 = max simplify within error)
+    simplify_auto: bool = True        # derive simplify_error from the deviation target + model size
+    simplify_safety: float = 0.5      # how far below target to aim (0.5 = aim for half the budget)
     instance: bool = False            # OFF by default: costs per-instance node names
     instance_min: int = 2
     meshopt: bool = True
@@ -213,6 +215,27 @@ def _all_names(glb_path: Path) -> set[str]:
     return glb.node_names(g) | {m.name for m in (g.meshes or []) if m.name}
 
 
+def _max_part_radius_mm(glb_path: Path) -> float:
+    """Largest per-part bounding radius (mm). gltf-transform `simplify --error` is
+    a fraction of *mesh* radius, so to bound the WORST part to `target` mm the
+    error fraction must be target_mm / max_part_radius_mm."""
+    g = glb.load(glb_path)
+    maxr = 0.0
+    for m in (g.meshes or []):
+        lo = [1e30, 1e30, 1e30]
+        hi = [-1e30, -1e30, -1e30]
+        for p in m.primitives:
+            acc = g.accessors[p.attributes.POSITION]
+            if acc.min and acc.max:
+                for k in range(3):
+                    lo[k] = min(lo[k], acc.min[k])
+                    hi[k] = max(hi[k], acc.max[k])
+        if hi[0] > -1e30:
+            diag = sum((hi[k] - lo[k]) ** 2 for k in range(3)) ** 0.5
+            maxr = max(maxr, diag / 2.0)
+    return maxr * measure_mod.GLB_UNIT_TO_MM
+
+
 def _meshopt_quant_bound_mm(glb_path: Path, bits: int = 14) -> float:
     """Upper bound on position error from meshopt quantization: per-mesh bbox /
     2^bits, expressed in mm. Conservative (uses the largest mesh extent)."""
@@ -261,9 +284,20 @@ def optimize(src: Path, source_step: Path, out_dir: Path, opt: OptimizeOptions, 
         stage("weld", "merge identical vertices",
               lambda i, o: _run(_gt_cmd(["weld", str(i), str(o)])))
     if opt.simplify:
-        stage("simplify", f"error={opt.simplify_error} ratio={opt.simplify_ratio}",
+        # Default simplify --error (0.001 = 0.1% of mesh radius) is far too loose on
+        # large models (a 1 m seat -> ~1 mm allowed error -> visibly distorted). Derive
+        # the error fraction from the deviation TARGET and the model size so the worst
+        # part stays within budget; the re-measure below verifies it.
+        eff_error = opt.simplify_error
+        detail = f"error={opt.simplify_error} ratio={opt.simplify_ratio}"
+        if opt.simplify_auto:
+            r_mm = _max_part_radius_mm(cur)
+            if r_mm > 0:
+                eff_error = max((target_mm / r_mm) * opt.simplify_safety, 1e-6)
+                detail = f"error={eff_error:.6f} (auto: target {target_mm}mm / part-radius {r_mm:.0f}mm)"
+        stage("simplify", detail,
               lambda i, o: _run(_gt_cmd(["simplify", str(i), str(o),
-                                         "--error", str(opt.simplify_error),
+                                         "--error", str(eff_error),
                                          "--ratio", str(opt.simplify_ratio)])))
 
     shaped = cur  # last trimesh-readable, geometry-final GLB (pre-instance/meshopt)
