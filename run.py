@@ -95,6 +95,7 @@ def run(step: Path, out_root: Path, *,
         mode: str = "relative", chord: Optional[float] = None, angular: float = 20.0,
         classa_factor: float = 0.5, classa_angular: float = 12.0,
         target_mm: float = 0.1, samples: int = 100000, ref_factor: float = 10.0,
+        up_axis: str = "y",
         opt_options: Optional[optimize_mod.OptimizeOptions] = None,
         draw_call_budget: Optional[int] = None,
         argv: Optional[list[str]] = None) -> Path:
@@ -115,7 +116,7 @@ def run(step: Path, out_root: Path, *,
     profiles = convert_mod.build_profiles(base, classa_chord_factor=classa_factor,
                                           classa_angular_deg=classa_angular)
     production = archive / "production.glb"
-    conv = convert_mod.convert_with_ocp(step, production, profiles, verbose=False)
+    conv = convert_mod.convert_with_ocp(step, production, profiles, up_axis=up_axis, verbose=False)
 
     # ---- Phase 2: measure production ----
     # Reference must be FINER than production everywhere, so derive it from the
@@ -124,7 +125,7 @@ def run(step: Path, out_root: Path, *,
     meas_dir = archive / "measure"
     meas = measure_mod.measure(production, step, meas_dir, target_mm=target_mm,
                                ref_chord=base.chord / max(ref_factor, 1.0),
-                               ref_relative=base.relative,
+                               ref_relative=base.relative, up_axis=up_axis,
                                samplenum=samples, verbose=False)
     reference = Path(meas.reference_glb)  # reuse the SAME reference downstream
 
@@ -305,6 +306,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--samples", type=int, default=100000)
     ap.add_argument("--ref-factor", type=float, default=10.0,
                     help="reference mesh fineness vs production (def 10x finer; lower if too slow on huge models)")
+    ap.add_argument("--up-axis", choices=["y", "z"], default="y",
+                    help="glTF up-axis: y = glTF/Babylon standard (def), z = keep CAD Z-up")
     ap.add_argument("--draw-call-budget", type=int, default=None)
     # optimize toggles
     ap.add_argument("--no-merge-faces", action="store_true")
@@ -331,7 +334,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         run(args.step, out_root, mode=args.mode, chord=args.chord, angular=args.angular,
             target_mm=args.target, samples=args.samples, ref_factor=args.ref_factor,
-            opt_options=opt_options,
+            up_axis=args.up_axis, opt_options=opt_options,
             draw_call_budget=args.draw_call_budget, argv=argv)
         rc = 0
     except Exception as exc:  # keep the window open on error when double-clicked

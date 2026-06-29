@@ -117,7 +117,7 @@ class MeasureResult:
 # ==========================================================================
 def generate_reference_glb(step: Path, out: Path,
                            chord: float = 0.0001, angular_deg: float = 2.0,
-                           relative: bool = True) -> None:
+                           relative: bool = True, up_axis: str = "y") -> None:
     """Ultra-dense tessellation of the STEP -> GLB, the ground-truth stand-in.
 
     The reference MUST be finer than production *everywhere*, or deviation reads
@@ -136,7 +136,7 @@ def generate_reference_glb(step: Path, out: Path,
     params = occ.make_mesh_params(chord, np.radians(angular_deg),
                                   relative=relative, in_parallel=True)
     occ.mesh_shape(comp, params)
-    occ.write_glb(doc, out)
+    occ.write_glb(doc, out, up_axis=up_axis)
 
 
 # ==========================================================================
@@ -255,16 +255,18 @@ def measure(prod_glb: Path, source_step: Path, out_dir: Path, *,
             target_mm: float = 0.1,
             reference_glb: Optional[Path] = None,
             ref_chord: float = 0.0001, ref_relative: bool = True,
-            ref_angular_deg: float = 2.0,
+            ref_angular_deg: float = 2.0, up_axis: str = "y",
             samplenum: int = 100000, weld_pct: float = 0.001,
             verbose: bool = True) -> MeasureResult:
     t0 = time.perf_counter()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) reference mesh (generate once, or reuse a provided one for re-measures)
+    # 1) reference mesh (generate once, or reuse a provided one for re-measures).
+    #    MUST use the same up_axis as production so the two meshes align.
     ref_glb = reference_glb or (out_dir / "_reference_dense.glb")
     if not ref_glb.exists():
-        generate_reference_glb(source_step, ref_glb, ref_chord, ref_angular_deg, ref_relative)
+        generate_reference_glb(source_step, ref_glb, ref_chord, ref_angular_deg,
+                               ref_relative, up_axis=up_axis)
 
     # 2) web-cost metrics from the production GLB
     g = glb.load(prod_glb)
@@ -405,10 +407,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--ref-angular", type=float, default=2.0, help="reference angular deg (def 2)")
     ap.add_argument("--reference", type=Path, default=None, help="reuse an existing reference GLB")
     ap.add_argument("--samples", type=int, default=100000, help="Hausdorff sample count (def 100000)")
+    ap.add_argument("--up-axis", choices=["y", "z"], default="y",
+                    help="up-axis of the GLB being measured (must match how it was converted)")
     args = ap.parse_args(argv)
     measure(args.glb, args.step, args.out, target_mm=args.target,
             reference_glb=args.reference, ref_chord=args.ref_chord,
-            ref_relative=not args.ref_absolute,
+            ref_relative=not args.ref_absolute, up_axis=args.up_axis,
             ref_angular_deg=args.ref_angular, samplenum=args.samples)
     return 0
 

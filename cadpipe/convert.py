@@ -176,7 +176,7 @@ class ConvertResult:
 def convert_with_ocp(src: Path, dst: Path,
                      profiles: dict[str, Tessellation],
                      classifier: Callable[[str, Optional[str]], str] = classify_part,
-                     *, verbose: bool = True) -> ConvertResult:
+                     *, up_axis: str = "y", verbose: bool = True) -> ConvertResult:
     """STEP -> GLB via OCCT, meshing each part with its class profile."""
     t0 = time.perf_counter()
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -201,7 +201,7 @@ def convert_with_ocp(src: Path, dst: Path,
             bbox_diag_mm=occ.bbox_diagonal(shape),
         ))
 
-    occ.write_glb(doc, dst)
+    occ.write_glb(doc, dst, up_axis=up_axis)
 
     # ---- verify structure survived (read the GLB back) -------------------
     g = glb.load(dst)
@@ -303,13 +303,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--classa-angular", type=float, default=12.0,
                     help="class-A angular deviation in degrees (def 12)")
     ap.add_argument("--no-parallel", action="store_true", help="disable parallel meshing")
+    ap.add_argument("--up-axis", choices=["y", "z"], default="y",
+                    help="glTF up-axis: y = glTF/Babylon standard (def), z = keep CAD")
     args = ap.parse_args(argv)
 
     dst = args.dst or Path("out") / (args.src.stem + ".glb")
     base = _build_base_tess(args)
     profiles = build_profiles(base, classa_chord_factor=args.classa_factor,
                               classa_angular_deg=args.classa_angular)
-    convert_with_ocp(args.src, dst, profiles)
+    convert_with_ocp(args.src, dst, profiles, up_axis=args.up_axis)
     return 0
 
 

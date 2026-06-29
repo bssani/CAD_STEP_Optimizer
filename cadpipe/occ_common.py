@@ -29,6 +29,7 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.IMeshTools import IMeshTools_Parameters
 from OCP.RWGltf import RWGltf_CafWriter
+from OCP.RWMesh import RWMesh_CoordinateSystemConverter, RWMesh_CoordinateSystem
 from OCP.TColStd import TColStd_IndexedDataMapOfStringString
 from OCP.Message import Message_ProgressRange
 from OCP.Bnd import Bnd_Box
@@ -147,10 +148,24 @@ def free_compound(st: XCAFDoc_ShapeTool) -> TopoDS_Compound:
 # --------------------------------------------------------------------------
 # GLB output
 # --------------------------------------------------------------------------
-def write_glb(doc: TDocStd_Document, out_path: Path | str) -> None:
+def write_glb(doc: TDocStd_Document, out_path: Path | str, *, up_axis: str = "y") -> None:
     """Write the XCAF document to a binary glTF (.glb). Triangulation must
-    already be computed on the shapes (call mesh_shape first)."""
+    already be computed on the shapes (call mesh_shape first).
+
+    up_axis="y" (default): convert OCCT Z-up (CAD) -> glTF Y-up so the model
+    stands upright in glTF/Babylon viewers. This is a pure ROTATION, so it does
+    NOT flip face winding / normals. up_axis="z" keeps the CAD Z-up convention.
+    Length stays metres in both cases (mm->m), so measure.GLB_UNIT_TO_MM is
+    unaffected.
+    """
     writer = RWGltf_CafWriter(TCollection_AsciiString(str(out_path)), True)  # binary
+    if up_axis.lower() == "y":
+        conv = RWMesh_CoordinateSystemConverter()
+        conv.SetInputCoordinateSystem(RWMesh_CoordinateSystem.RWMesh_CoordinateSystem_Zup)
+        conv.SetOutputCoordinateSystem(RWMesh_CoordinateSystem.RWMesh_CoordinateSystem_glTF)
+        conv.SetInputLengthUnit(0.001)   # STEP is millimetres
+        conv.SetOutputLengthUnit(1.0)    # glTF is metres
+        writer.SetCoordinateSystemConverter(conv)
     file_info = TColStd_IndexedDataMapOfStringString()
     if not writer.Perform(doc, file_info, Message_ProgressRange()):
         raise RuntimeError(f"GLB write failed: {out_path}")

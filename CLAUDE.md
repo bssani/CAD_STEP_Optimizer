@@ -47,6 +47,11 @@ cadpipe-run.spec  PyInstaller onedir spec ; build_exe.bat one-shot build
   team's real exterior/class-A naming/layer rule there; routing is already live.
 - **GLB is in METRES** (OCCT scales mm->m on glTF export). Multiply by 1000 for mm
   (`measure.GLB_UNIT_TO_MM`). If a future exporter changes this, fix that constant.
+- **Y-up by default** (glTF/Babylon standard). OCCT writes Z-up (CAD) by default, which
+  looks rotated in glTF viewers. `occ.write_glb(up_axis="y")` applies a Zup->glTF
+  RWMesh converter (a pure ROTATION -> does NOT flip normals/winding; verified DomeCap
+  normals stay 100% outward). `--up-axis z` keeps CAD Z-up. Production AND the reference
+  mesh must use the SAME up_axis (run.py threads it to both) or Hausdorff misaligns.
 - **Topology QA is PER-PART, not per-assembly.** Welding the whole assembled mesh
   flags every place two parts merely TOUCH as non-manifold (false alarm — seen on the
   real GM_Samples seat: 307k bogus non-manifold edges). `measure._topology_qa` now
