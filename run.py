@@ -289,11 +289,17 @@ def _pause(frozen: bool) -> None:
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     frozen = getattr(sys, "frozen", False)
-    if frozen and not argv:  # double-clicked .exe with no file
-        print("CAD STEP -> GLB quality pipeline\n")
-        print("Usage: drag a .step file onto this .exe, or run from a terminal:")
-        print("   cadpipe-run <model.step> [--web] [--target 0.1] [--instance]\n")
-        _pause(frozen)
+    # Double-click (no args) or explicit --gui opens the window. Drag-and-drop a
+    # STEP onto the .exe still runs the CLI directly (fast path).
+    if (frozen and not argv) or ("--gui" in argv):
+        init = next((Path(a) for a in argv
+                     if a.lower().endswith((".step", ".stp")) and Path(a).exists()), None)
+        try:
+            from cadpipe import gui
+            gui.launch(run, initial_step=init)
+        except Exception as exc:
+            print(f"GUI를 열 수 없습니다: {exc}\n터미널에서 'cadpipe-run <model.step>' 로 실행하세요.")
+            _pause(frozen)
         return 0
     ap = argparse.ArgumentParser(description="Full pipeline: STEP -> measured, optimized GLB (Phase 4).")
     ap.add_argument("step", type=Path, help="input STEP file")

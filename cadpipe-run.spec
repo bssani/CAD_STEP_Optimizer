@@ -51,7 +51,8 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=[
-        "tkinter", "matplotlib", "PyQt5", "PySide2", "PySide6",
+        # NOTE: tkinter is intentionally NOT excluded — it powers the GUI (gui.py).
+        "matplotlib", "PyQt5", "PySide2", "PySide6",
         # not used by this app; torch was pulled in transitively, bloats the
         # bundle to >1GB and ships duplicate DLLs that can segfault native imports.
         "torch", "torchvision", "torchaudio", "functorch", "torchgen",
