@@ -33,9 +33,16 @@ def _accessor_array(g: GLTF2, blob: bytes, idx: int) -> np.ndarray:
     itemsize = dt.itemsize * ncomp
     stride = bv.byteStride or itemsize
     base = (bv.byteOffset or 0) + (acc.byteOffset or 0)
-    raw = np.frombuffer(blob, dtype=np.uint8, count=stride * acc.count, offset=base)
-    cols = np.ascontiguousarray(raw.reshape(acc.count, stride)[:, :itemsize])
-    return cols.view(dt).reshape(acc.count, ncomp)
+    # exact span: the LAST element occupies only `itemsize` bytes, not a full
+    # `stride`. Using stride*count over-reads past the buffer end on interleaved,
+    # tightly-packed exports (-> "buffer is smaller than requested size").
+    span = (acc.count - 1) * stride + itemsize
+    raw = np.frombuffer(blob, dtype=np.uint8, count=span, offset=base)
+    if stride == itemsize:
+        return raw.view(dt).reshape(acc.count, ncomp)
+    # interleaved: gather each element's itemsize bytes at stride intervals
+    rows = np.arange(acc.count)[:, None] * stride + np.arange(itemsize)[None, :]
+    return np.ascontiguousarray(raw[rows]).view(dt).reshape(acc.count, ncomp)
 
 
 def iter_part_meshes(g: GLTF2):
@@ -46,20 +53,23 @@ def iter_part_meshes(g: GLTF2):
     Geometry is in LOCAL mesh coords (topology is transform-invariant)."""
     blob = g.binary_blob()
     for m in (g.meshes or []):
-        verts, faces, voff = [], [], 0
-        for p in m.primitives:
-            if p.mode not in (None, 4):       # TRIANGLES only
-                continue
-            if p.attributes.POSITION is None:
-                continue
-            pos = _accessor_array(g, blob, p.attributes.POSITION).astype(np.float64)
-            if p.indices is not None:
-                idx = _accessor_array(g, blob, p.indices).reshape(-1).astype(np.int64)
-            else:
-                idx = np.arange(len(pos), dtype=np.int64)
-            verts.append(pos)
-            faces.append(idx.reshape(-1, 3) + voff)
-            voff += len(pos)
+        try:
+            verts, faces, voff = [], [], 0
+            for p in m.primitives:
+                if p.mode not in (None, 4):       # TRIANGLES only
+                    continue
+                if p.attributes.POSITION is None:
+                    continue
+                pos = _accessor_array(g, blob, p.attributes.POSITION).astype(np.float64)
+                if p.indices is not None:
+                    idx = _accessor_array(g, blob, p.indices).reshape(-1).astype(np.int64)
+                else:
+                    idx = np.arange(len(pos), dtype=np.int64)
+                verts.append(pos)
+                faces.append(idx.reshape(-1, 3) + voff)
+                voff += len(pos)
+        except Exception:
+            continue  # skip a part we can't decode rather than abort the whole QA
         if verts:
             yield (m.name or "<unnamed>", np.vstack(verts), np.vstack(faces))
 

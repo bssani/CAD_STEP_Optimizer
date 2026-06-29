@@ -118,19 +118,27 @@ def run(step: Path, out_root: Path, *,
     production = archive / "production.glb"
     conv = convert_mod.convert_with_ocp(step, production, profiles, up_axis=up_axis, verbose=False)
 
+    prod_metrics = optimize_mod.web_metrics(production)
+    final = archive / "final.glb"
+
     # ---- Phase 2: measure production ----
     # Reference must be FINER than production everywhere, so derive it from the
     # production tessellation (10x finer, same mode) instead of a fixed absolute
     # value (which reads ~0 deviation on large models).
+    # If measurement fails, the conversion still succeeded -> deliver the GLB and
+    # report the failure rather than crashing the whole run.
     meas_dir = archive / "measure"
-    meas = measure_mod.measure(production, step, meas_dir, target_mm=target_mm,
-                               ref_chord=base.chord / max(ref_factor, 1.0),
-                               ref_relative=base.relative, up_axis=up_axis,
-                               samplenum=samples, verbose=False)
-    reference = Path(meas.reference_glb)  # reuse the SAME reference downstream
-
-    prod_metrics = optimize_mod.web_metrics(production)
-    final = archive / "final.glb"
+    try:
+        meas = measure_mod.measure(production, step, meas_dir, target_mm=target_mm,
+                                   ref_chord=base.chord / max(ref_factor, 1.0),
+                                   ref_relative=base.relative, up_axis=up_axis,
+                                   samplenum=samples, verbose=False)
+        reference = Path(meas.reference_glb)  # reuse the SAME reference downstream
+    except Exception as exc:
+        import traceback
+        shutil.copy(production, final)
+        return _write_convert_only(archive, step, production, final, conv,
+                                   prod_metrics, str(exc), traceback.format_exc(), argv)
 
     # ---- Phase 3: optimize (skipped gracefully if Node toolchain absent) ----
     opt = None
@@ -198,6 +206,52 @@ def run(step: Path, out_root: Path, *,
     _write_summary(archive / "run_summary.md", manifest, conv, meas)
 
     _print_summary(manifest, overall_pass, archive)
+    return archive
+
+
+def _write_convert_only(archive: Path, step: Path, production: Path, final: Path,
+                        conv, prod_metrics, error: str, tb: str,
+                        argv: Optional[list[str]]) -> Path:
+    """Convert succeeded but measurement/optimize crashed: still deliver the GLB
+    and report the failure, instead of aborting the whole run."""
+    man = {
+        "run_id": archive.name.replace("run_", ""),
+        "input": {"step": str(step), "sha256": _sha256(step), "size_bytes": step.stat().st_size},
+        "tool_versions": _tool_versions(production),
+        "convert": conv.to_dict(),
+        "web_metrics": asdict(prod_metrics),
+        "measurement_error": error,
+        "overall_pass": False,
+        "note": "convert succeeded; measurement/optimization failed — GLB still produced",
+    }
+    (archive / "manifest.json").write_text(json.dumps(man, indent=2), encoding="utf-8")
+    lines = [
+        f"# Run summary — {archive.name}",
+        "",
+        "**Overall: ⚠️ 변환 성공 / 측정 실패**",
+        "",
+        "STEP → GLB **변환은 정상**입니다. `production.glb` / `final.glb` 를 쓸 수 있어요.",
+        "측정(편차·토폴로지) 단계에서 오류가 나서 그 수치만 없습니다.",
+        "",
+        "## Input",
+        f"- STEP: `{step}`",
+        "",
+        "## 변환 결과 (사용 가능)",
+        f"- 부품 이름 보존: {conv.part_names_preserved}/{conv.part_names_total}",
+        f"- draw calls: {prod_metrics.draw_call_estimate}  ·  triangles: {prod_metrics.rendered_triangles}"
+        f"  ·  file: {prod_metrics.file_kb:.1f} KB",
+        "- 산출물: `production.glb`, `final.glb`",
+        "",
+        "## 측정 오류 (개발자 전달용 — 이 부분을 캡쳐해서 공유해 주세요)",
+        "```",
+        tb.strip(),
+        "```",
+    ]
+    (archive / "run_summary.md").write_text("\n".join(lines), encoding="utf-8")
+    print(f"[run {archive.name}] 변환 성공 / 측정 실패")
+    print(f"  GLB는 정상 생성됨: {final}")
+    print(f"  측정 단계 오류: {error}")
+    print(f"  자세한 내용: {archive / 'run_summary.md'}")
     return archive
 
 
