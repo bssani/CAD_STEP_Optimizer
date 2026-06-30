@@ -33,6 +33,7 @@
   <label class="btn">📂 GLB 열기<input id="file" type="file" accept=".glb,.gltf" style="display:none"></label>
   <label class="tog"><input type="checkbox" id="cull" checked> 후면 컬링(끄면 뒤집힌 면 보임)</label>
   <label class="tog"><input type="checkbox" id="wire"> 와이어프레임</label>
+  <label class="tog"><input type="checkbox" id="clay" checked> 밝게(무광 회색)</label>
   <label class="tog"><input type="checkbox" id="axes" checked> 축(X빨강 Y초록 Z파랑)</label>
   <span class="k">· 데이터는 업로드되지 않습니다(로컬 전용)</span>
 </div>
@@ -53,8 +54,10 @@ function fresh(){
   camera = new BABYLON.ArcRotateCamera('cam', Math.PI/4, Math.PI/3, 10, BABYLON.Vector3.Zero(), scene);
   camera.attachControl(canvas, true);
   camera.wheelDeltaPercentage = 0.01;
-  new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0,1,0), scene).intensity = 0.85;
-  const d = new BABYLON.DirectionalLight('d', new BABYLON.Vector3(-0.5,-1,-0.5), scene); d.intensity = 0.8;
+  const hemi = new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0,1,0), scene);
+  hemi.intensity = 1.1; hemi.groundColor = new BABYLON.Color3(0.45,0.45,0.5);
+  const d1 = new BABYLON.DirectionalLight('d1', new BABYLON.Vector3(-0.4,-1,-0.55), scene); d1.intensity = 0.95;
+  const d2 = new BABYLON.DirectionalLight('d2', new BABYLON.Vector3(0.55,-0.25,0.5), scene); d2.intensity = 0.65;
   return scene;
 }
 fresh();
@@ -79,10 +82,14 @@ async function loadFile(file){
   const c = ext.min.add(ext.max).scale(0.5);
   const size = ext.max.subtract(ext.min);
   const r = Math.max(size.x,size.y,size.z)||1;
-  camera.setTarget(c); camera.radius = r*2.2; camera.lowerRadiusLimit = r*0.05;
+  camera.setTarget(c); camera.radius = r*2.2;
+  camera.lowerRadiusLimit = r*0.01;
+  camera.minZ = Math.max(r*0.001, 1e-4);   // small near-plane -> zoom in close WITHOUT clipping
+  camera.maxZ = r*100;
   if(axesViewer) axesViewer.dispose();
   axesViewer = new BABYLON.AxesViewer(scene, r*0.6);
 
+  applyMaterials();
   applyToggles();
   showStats(size);
   buildTree();
@@ -114,11 +121,26 @@ function buildTree(){
   document.getElementById('tree').innerHTML = out.join('\n') || '(노드 없음)';
 }
 
+function applyMaterials(){
+  // OCCT exports METALLIC PBR materials; with no environment map they render
+  // almost black. Force them matte/diffuse so the shape + detail are visible.
+  const clay = document.getElementById('clay').checked;
+  scene.materials.forEach(m=>{
+    if('metallic' in m) m.metallic = 0;
+    if('roughness' in m) m.roughness = 0.8;
+    if('environmentIntensity' in m) m.environmentIntensity = 0;
+    if(m.albedoColor){
+      if(!m._origAlbedo) m._origAlbedo = m.albedoColor.clone();
+      m.albedoColor = clay ? new BABYLON.Color3(0.62,0.62,0.66) : m._origAlbedo.clone();
+    }
+  });
+}
 function applyToggles(){
   const cull=document.getElementById('cull').checked, wire=document.getElementById('wire').checked;
   scene.meshes.forEach(m=>{ if(m.material){ m.material.backFaceCulling=cull; m.material.wireframe=wire; }});
 }
 ['cull','wire'].forEach(id=>document.getElementById(id).addEventListener('change',applyToggles));
+document.getElementById('clay').addEventListener('change',applyMaterials);
 document.getElementById('axes').addEventListener('change',e=>{ if(axesViewer) axesViewer.xAxis.setEnabled(e.target.checked),axesViewer.yAxis.setEnabled(e.target.checked),axesViewer.zAxis.setEnabled(e.target.checked); });
 
 document.getElementById('file').addEventListener('change',e=>{ if(e.target.files[0]) loadFile(e.target.files[0]); });
